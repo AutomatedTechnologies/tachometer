@@ -1,0 +1,71 @@
+name: Tachometer test build
+
+on:
+  push:
+    branches: [build-test]
+  workflow_dispatch:
+
+# The publish step creates a GitHub Release with GITHUB_TOKEN (Distro-line
+# precedent, 2026-11-07: default token needs contents: write declared).
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build app icon (iconutil, from the committed iconset)
+        run: |
+          iconutil -c icns Tachometer/Resources/AppIcon.iconset -o Tachometer/Resources/Tachometer.icns
+          ls -la Tachometer/Resources/Tachometer.icns
+
+      - name: Build app (make app — clang, unsigned, x86_64, 10.13 floor)
+        run: |
+          set -o pipefail
+          make app 2>&1 | tee clang.log
+          cp Tachometer/Resources/Tachometer.icns Tachometer.app/Contents/Resources/
+          ls -la Tachometer.app/Contents/Resources/
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-log
+          path: clang.log
+
+      - name: Stamp build version and package app as zip
+        if: success()
+        run: |
+          APP="Tachometer.app"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion tachometer-test-${{ github.run_number }}" "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$APP/Contents/Info.plist"
+          file "$APP/Contents/MacOS/Tachometer"
+          ditto -c -k --keepParent "$APP" Tachometer-test.zip
+          ls -la Tachometer-test.zip
+
+      - name: Upload test build zip (survival copy)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tachometer-test-zip
+          path: Tachometer-test.zip
+
+      - name: Publish prerelease with test build
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BUILT=$(date -u '+%Y-%m-%d %H:%M UTC')
+          NOTES="Internal test build of Tachometer, the Detroit Automation Academy's on-device analytics app for macOS High Sierra: it measures what Academy apps cost the machine — per-process CPU and memory for Academy app families with renderer/GPU processes itemized by role, sampled on-device via libproc into a segmented single-writer store (~/Library/Application Support/com.detroitautomationacademy.analytics/samples/), with an in-app budget scorer (verdicts.json) and a session summary that separates steady-state cost from view-switch spikes. Contains no network code. Publisher: Detroit Automation Academy. Unsigned test build — not gate-cleared, not yet verified on the High Sierra rig; install from the Distro catalog (testing).
+
+          BUILD STAMP — Built: $BUILT · Build: tachometer-test-${{ github.run_number }} (CI run ${{ github.run_id }}) · Agent: Minion · Authorized: J. Spencer Smith, directive of 2026-11-12 (on-device analytics deploy)"
+          gh release create tachometer-test-${{ github.run_number }} Tachometer-test.zip \
+            --prerelease \
+            --title "Tachometer test build ${{ github.run_number }}" \
+            --notes "$NOTES"
